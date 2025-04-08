@@ -1,0 +1,4 @@
+flask
+pyzmq
+requests
+pillow
