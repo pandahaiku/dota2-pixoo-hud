@@ -31,7 +31,7 @@ def get_hero_portrait_cached(hero_name: str) -> Image.Image:
     if hero_id == "unknown":
         logging.warning("[!] Hero is unknown — using fallback portrait")
         return Image.new("RGBA", (41, 25), (50, 50, 50, 255))
-    
+
     if hero_id in HEROPORTRAIT_CACHE:
         return HEROPORTRAIT_CACHE[hero_id]
 

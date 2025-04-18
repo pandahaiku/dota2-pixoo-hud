@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class GameState(Enum):
     UNKNOWN = "UNKNOWN"
     DISCONNECTED = "DOTA_GAMERULES_STATE_DISCONNECT"

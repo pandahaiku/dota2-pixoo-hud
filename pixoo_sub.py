@@ -1,13 +1,13 @@
 import zmq
 import logging
+import time
+import requests
 from datetime import timedelta
 from typing import Dict, Any
-
 from pixoo import Pixoo
 from hud_renderer import HUDRenderer
 from dota_game_states import GameState
-from config import PIXOO_IP, ZMQ_SUBSCRIBE_ADDR, ZMQ_SUBSCRIBE_TOPIC
-import requests
+from config import PIXOO_IP, ZMQ_SUBSCRIBE_ADDR, ZMQ_SUBSCRIBE_TOPIC, GSI_TIMEOUT
 
 
 def get_pixoo_channel(ip: str) -> int:
@@ -60,6 +60,7 @@ context = zmq.Context()
 socket = context.socket(zmq.SUB)
 socket.connect(ZMQ_SUBSCRIBE_ADDR)
 socket.setsockopt_string(zmq.SUBSCRIBE, ZMQ_SUBSCRIBE_TOPIC)
+socket.RCVTIMEO = GSI_TIMEOUT  # Set socket receive timeout (5 seconds)
 
 
 def format_hero_name(raw_name: str) -> str:
@@ -133,14 +134,15 @@ def get_game_details(data: Dict[str, Any]) -> Dict[str, Any]:
 def main() -> None:
     logging.info("🟢 Pixoo Dota 2 HUD listener started.")
     hud_renderer = HUDRenderer()
-    prev_game_state = None  # Keep track of previous game state to detect transitions
+    prev_game_state = None
+    last_update_time = time.time()
 
     while True:
         try:
-            # Receive new game state JSON payload via ZeroMQ
             data = socket.recv_json()
+            last_update_time = time.time()  # Record last successful message
 
-            # Get current game state from the map data
+            # Parse game state
             map_data = data.get("map", {})
             raw_game_state = map_data.get("game_state", "UNKNOWN")
             game_state = (
@@ -156,24 +158,15 @@ def main() -> None:
                 )
                 prev_game_state = game_state
 
-                if (
-                    game_state == GameState.PRE_GAME
-                    or game_state == GameState.GAME_IN_PROGRESS
-                ):
+                if game_state in [GameState.PRE_GAME, GameState.GAME_IN_PROGRESS]:
                     logging.info("[🏁] Match has started!")
-                    pixoo.set_channel(0)  # Switch to custom drawing mode
-                elif (
-                    game_state == GameState.POST_GAME or game_state == GameState.UNKNOWN
-                ):
-                    logging.info("[✅] Match has ended.")
-                    switch_to_divoom_channel(PIXOO_IP, 2)
+                    pixoo.set_channel(0)
+                elif game_state in [GameState.POST_GAME, GameState.UNKNOWN]:
+                    logging.info("[✅] Match has ended or state unknown.")
                     switch_to_divoom_channel(PIXOO_IP, original_channel)
 
-            # If game is in progress, update the HUD display on Pixoo
-            if (
-                game_state == GameState.PRE_GAME
-                or game_state == GameState.GAME_IN_PROGRESS
-            ):
+            # Update HUD if actively in-game
+            if game_state in [GameState.PRE_GAME, GameState.GAME_IN_PROGRESS]:
                 details = get_game_details(data)
                 img = hud_renderer.create_base_layout(
                     hero_name=details["hero_id"],
@@ -189,8 +182,17 @@ def main() -> None:
                 pixoo.draw_image(img)
                 pixoo.push()
 
+        except zmq.error.Again:
+            # Timeout occurred — check how long it's been since last GSI update
+            if time.time() - last_update_time > GSI_TIMEOUT / 1000:
+                logging.warning(
+                    f"⏱️ No data received in {GSI_TIMEOUT / 1000}s. Assuming Dota 2 was closed."
+                )
+                switch_to_divoom_channel(PIXOO_IP, original_channel)
+                logging.warning(f"Closing Script. Goodbye! 👋")
+                exit()
         except Exception as e:
-            logging.exception("[!] Error while updating Pixoo display")
+            logging.exception("[!] Unexpected error while updating Pixoo display")
 
 
 if __name__ == "__main__":
