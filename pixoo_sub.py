@@ -5,15 +5,57 @@ from typing import Dict, Any
 
 from pixoo import Pixoo
 from hud_renderer import HUDRenderer
+from dota_game_states import GameState
 from config import PIXOO_IP, ZMQ_SUBSCRIBE_ADDR, ZMQ_SUBSCRIBE_TOPIC
+import requests
 
-# Logging Setup
+
+def get_pixoo_channel(ip: str) -> int:
+    """
+    Retrieves the current channel index from the Pixoo device.
+    Returns:
+        int: The current channel index, or channel 0 if retrieval fails.
+    """
+    try:
+        payload = {"Command": "Channel/GetIndex"}
+        response = requests.post(f"http://{ip}/post", json=payload, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("SelectIndex", 0)
+    except Exception as e:
+        print(f"[!] Failed to get Pixoo channel: {e}")
+        return 0
+
+
+def switch_to_divoom_channel(ip: str, channel_index: int = 1):
+    """
+    Switch Pixoo display to a built-in channel.
+    Common channels:
+        0 = Faces
+        1 = Cloud Channel (Divoom App)
+        2 = Visualizer
+        3 = Custom (API-controlled)
+    """
+    try:
+        payload = {"Command": "Channel/SetIndex", "SelectIndex": channel_index}
+        response = requests.post(f"http://{ip}/post", json=payload, timeout=5)
+        response.raise_for_status()
+        print(f"[✅] Switched to Pixoo channel {channel_index}")
+    except Exception as e:
+        print(f"[!] Failed to switch channel: {e}")
+
+
+original_channel = get_pixoo_channel(PIXOO_IP)
+print(f"Original Pixoo channel: {original_channel}")
+
+
+# Set up logging format
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
-# Pixoo Setup
+# Initialize Pixoo display using its IP address
 pixoo = Pixoo(PIXOO_IP)
 
-# ZeroMQ Setup
+# Set up ZeroMQ subscriber socket to receive GSI updates
 context = zmq.Context()
 socket = context.socket(zmq.SUB)
 socket.connect(ZMQ_SUBSCRIBE_ADDR)
@@ -21,13 +63,16 @@ socket.setsockopt_string(zmq.SUBSCRIBE, ZMQ_SUBSCRIBE_TOPIC)
 
 
 def format_hero_name(raw_name: str) -> str:
+    """
+    Convert raw hero ID from Dota (e.g., 'npc_dota_hero_juggernaut') into readable format ('Juggernaut').
+    """
     base = raw_name.replace("npc_dota_hero_", "")
     return " ".join(word.capitalize() for word in base.split("_"))
 
 
 def get_game_details(data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Extract relevant hero/player/map info from GSI payload.
+    Extract key hero, player, and map details from the GSI JSON payload.
     """
     hero_data = data.get("hero", {})
     raw_hero_id = hero_data.get("name", "npc_dota_hero_unknown")
@@ -48,10 +93,11 @@ def get_game_details(data: Dict[str, Any]) -> Dict[str, Any]:
     assists = player.get("assists", 0)
     gold = player.get("gold", 0)
 
+    # Convert clock time (seconds) into HH:MM:SS string
     clock_time = data.get("map", {}).get("clock_time", 0)
     time_str = str(timedelta(seconds=max(0, int(clock_time))))
 
-    # Filter inventory to include only specific slots.
+    # Filter item slots to show only relevant gear (no empty or unused slots)
     all_items = data.get("items", {})
     relevant_slots = [
         "slot0",
@@ -86,28 +132,62 @@ def get_game_details(data: Dict[str, Any]) -> Dict[str, Any]:
 
 def main() -> None:
     logging.info("🟢 Pixoo Dota 2 HUD listener started.")
-    # Instantiate the HUDRenderer.
     hud_renderer = HUDRenderer()
+    prev_game_state = None  # Keep track of previous game state to detect transitions
 
     while True:
         try:
+            # Receive new game state JSON payload via ZeroMQ
             data = socket.recv_json()
-            details = get_game_details(data)
 
-            img = hud_renderer.create_base_layout(
-                hero_name=details["hero_id"],
-                level=details["level"],
-                hp=details["hp_ratio"],
-                mana=details["mana_ratio"],
-                items=details["items"],
-                kills=details["kills"],
-                deaths=details["deaths"],
-                assists=details["assists"],
-                gold=details["gold"],
+            # Get current game state from the map data
+            map_data = data.get("map", {})
+            raw_game_state = map_data.get("game_state", "UNKNOWN")
+            game_state = (
+                GameState(raw_game_state)
+                if raw_game_state in GameState._value2member_map_
+                else GameState.UNKNOWN
             )
 
-            pixoo.draw_image(img)
-            pixoo.push()
+            # Check if game state has changed
+            if game_state != prev_game_state:
+                logging.info(
+                    f"[📺] Game state changed: {prev_game_state} ➜ {game_state}"
+                )
+                prev_game_state = game_state
+
+                if (
+                    game_state == GameState.PRE_GAME
+                    or game_state == GameState.GAME_IN_PROGRESS
+                ):
+                    logging.info("[🏁] Match has started!")
+                    pixoo.set_channel(0)  # Switch to custom drawing mode
+                elif (
+                    game_state == GameState.POST_GAME or game_state == GameState.UNKNOWN
+                ):
+                    logging.info("[✅] Match has ended.")
+                    switch_to_divoom_channel(PIXOO_IP, 2)
+                    switch_to_divoom_channel(PIXOO_IP, original_channel)
+
+            # If game is in progress, update the HUD display on Pixoo
+            if (
+                game_state == GameState.PRE_GAME
+                or game_state == GameState.GAME_IN_PROGRESS
+            ):
+                details = get_game_details(data)
+                img = hud_renderer.create_base_layout(
+                    hero_name=details["hero_id"],
+                    level=details["level"],
+                    hp=details["hp_ratio"],
+                    mana=details["mana_ratio"],
+                    items=details["items"],
+                    kills=details["kills"],
+                    deaths=details["deaths"],
+                    assists=details["assists"],
+                    gold=details["gold"],
+                )
+                pixoo.draw_image(img)
+                pixoo.push()
 
         except Exception as e:
             logging.exception("[!] Error while updating Pixoo display")

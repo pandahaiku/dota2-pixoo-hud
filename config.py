@@ -14,7 +14,7 @@ ZMQ_PUB_PORT = 5555
 ZMQ_PUB_BIND_ADDR = f"tcp://*:{ZMQ_PUB_PORT}"
 
 # Pixoo display IP
-PIXOO_IP = "192.168.68.75"
+PIXOO_IP = "192.168.68.65"
 
 # ZeroMQ subscriber config
 ZMQ_SUBSCRIBE_ADDR = "tcp://localhost:5555"
@@ -34,7 +34,7 @@ UPDATE_INTERVAL = "1"  # In seconds, how often data is sent from GSI
 # Dota 2 CDN Details
 HERO_CACHE_DIR = "cache/heroes"
 ITEM_CACHE_DIR = "cache/items"
-GOLD_ICON_PATH = "assets/gold.png"
+GOLD_ICON_PATH = "./assets/gold.png"
 HERO_URL_TEMPLATE = (
     "https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes"
 )

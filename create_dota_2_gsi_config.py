@@ -39,7 +39,7 @@ def create_gsi_config(
             "data"
             {{
                 "provider"   "1"
-                "map"        "0"
+                "map"        "1"
                 "player"     "1"
                 "hero"       "1"
                 "abilities"  "0"
